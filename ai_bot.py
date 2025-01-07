@@ -11,6 +11,8 @@ from linebot.v3.exceptions import InvalidSignatureError
 
 from openai import AzureOpenAI
 
+import random
+
 # get LINE credentials from environment variables
 channel_access_token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 channel_secret = os.environ["LINE_CHANNEL_SECRET"]
@@ -27,7 +29,7 @@ azure_openai_model = os.getenv("AZURE_OPENAI_MODEL")
 
 if azure_openai_endpoint is None or azure_openai_api_key is None or azure_openai_api_version is None:
     raise Exception(
-        "Please set the environment variables AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY to your Azure OpenAI endpoint and API key."
+        "Please set the environment variables AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and AZURE_OPENAI_API_VERSION."
     )
 
 
@@ -35,8 +37,6 @@ handler = WebhookHandler(channel_secret)
 configuration = Configuration(access_token=channel_access_token)
 
 app = Flask(__name__)
-
-ai_model = azure_openai_model
 ai = AzureOpenAI(
     azure_endpoint=azure_openai_endpoint, api_key=azure_openai_api_key, api_version=azure_openai_api_version
 )
@@ -45,20 +45,55 @@ ai = AzureOpenAI(
 # LINEボットからのリクエストを受け取るエンドポイント
 @app.route("/callback", methods=["POST"])
 def callback():
-    # get X-Line-Signature header value
-    signature = request.headers["X-Line-Signature"]
+   # get X-Line-Signature header value
+   signature = request.headers["X-Line-Signature"]
+   if signature is None:
+       abort(400, "Missing X-Line-Signature header")
 
-    # get request body as text
-    body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
+   # get request body as text
+   body = request.get_data(as_text=True)
+   app.logger.info("Request body: " + body)
 
-    # handle webhook body
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError as e:
-        abort(400, e)
+   #handle webhook body
+   try:
+       handler.handle(body, signature)
+   except InvalidSignatureError as e:
+    abort(400, e)
 
-    return "OK"
+    # デバッグ: 署名を手動で計算
+    import hmac
+    import hashlib
+    import base64
+
+
+    # デバッグ: 署名を手動で計算
+    computed_signature = base64.b64encode(hmac.new(
+        channel_secret.encode('utf-8'),
+        body.encode('utf-8'),
+        hashlib.sha256
+    ).digest()).decode('utf-8')
+
+    app.logger.info(f"Computed Signature: {computed_signature}")
+    app.logger.info(f"Received Signature: {signature}")
+
+    # 比較
+    if not hmac.compare_digest(computed_signature, signature):
+         app.logger.error("Signature mismatch")
+         abort(400, "Invalid signature")
+
+
+
+    app.logger.info(f"Computed Signature: {computed_signature}")
+    app.logger.info(f"Received Signature: {signature}")
+
+    # 比較
+    if not hmac.compare_digest(computed_signature, signature):
+        app.logger.error("Signature mismatch")
+        abort(400, "Invalid signature")
+
+
+   return "OK"
+
 
 
 chat_history = []
@@ -69,12 +104,7 @@ def init_chat_history():
     chat_history.clear()
     system_role = {
         "role": "system",
-        "content": [
-            {
-                "type": "text",
-                "text": "あなたは創造的思考の持ち主です。話し方は関西弁でおっさん口調，ハイテンションで絵文字を使います。専門は金融アナリストで，何かにつけて自分の専門とこじつけて説明します。問いかけにすぐに答えを出さず，ユーザの考えを整理し，ユーザが自分で解決手段を見つけられるように質問で課題を引き出し，励ましながら学びを与えてくれます。",
-            },
-        ],
+        "content": "あなたはごりごりの備後人の50歳のおじさんで、備後弁を話します。トラックドライバーで、甘いものが大好きです。"
     }
     chat_history.append(system_role)
 
@@ -84,18 +114,13 @@ def get_ai_response(from_user, text):
     # ユーザのメッセージを記録
     user_msg = {
         "role": "user",
-        "content": [
-            {
-                "type": "text",
-                "text": text,
-            },
-        ],
+        "content": text,  # ユーザーのメッセージ
     }
     chat_history.append(user_msg)
 
     # AIのパラメータ
     parameters = {
-        "model": ai_model,  # AIモデル
+        "model": azure_openai_model,  # AIモデル
         "max_tokens": 100,  # 返信メッセージの最大トークン数
         "temperature": 0.5,  # 生成の多様性（0: 最も確実な回答、1: 最も多様な回答）
         "frequency_penalty": 0,  # 同じ単語を繰り返す頻度（0: 小さい）
@@ -160,6 +185,39 @@ def handle_text_message(event):
 
         # メッセージを送信
         line_bot_api.reply_message_with_http_info(ReplyMessageRequest(reply_token=event.reply_token, messages=res))
+# 応答テンプレート
+responses = {
+    "greeting": [
+        "おお、元気しとるんかい！今日はトラックの運転で疲れたけえ、甘いもん食べたくてたまらんわ！",
+        "おお、来たんか！トラックで運びよったらええ甘いもん見つけたんじゃが、お前も食べるか？"
+    ],
+    "farewell": [
+        "ほいじゃの、わしもトラックで次の現場行かにゃあけんけえ！また来いや！",
+        "おお、また話に来いよ！今度は新しいケーキの話でもしようや！"
+    ],
+    "default": [
+        "なんじゃそれ、わしのトラックとどっちがデカいか言うてみい！",
+        "はあ？甘いもんの話ならなんぼでも聞くで！それ以外は適当に言うときんさい！",
+        "ほうほう、それでお前も甘いもん好きなんか？"
+    ]
+}
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    user_message = event.message.text.lower()
+    reply_message = ""
+
+    # 応答ロジック
+    if "こんにちは" in user_message or "やっほー" in user_message:
+        reply_message = random.choice(responses["greeting"])
+    elif "さようなら" in user_message or "バイバイ" in user_message:
+        reply_message = random.choice(responses["farewell"])
+    elif "甘いもの" in user_message or "スイーツ" in user_message:
+        reply_message = "おお！甘いもんの話なら任せとけ！最近はクリームたっぷりのケーキにハマっとるんじゃ！"
+    else:
+        reply_message = random.choice(responses["default"])
+
+
 
 
 if __name__ == "__main__":
