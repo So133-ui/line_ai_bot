@@ -168,6 +168,10 @@ def handle_text_message(event):
         line_bot_api = MessagingApi(api_client)
 
         res = []
+        if text == "おはよう":
+            # ユーザー名を含めて「おはよう」と返す
+            profile = line_bot_api.get_profile(event.source.user_id)
+            res = [TextMessage(text=f"{profile.display_name}さん、おはよう！")]
         if isinstance(event.source, UserSource):
             # ユーザー情報が取得できた場合
             profile = line_bot_api.get_profile(event.source.user_id)
