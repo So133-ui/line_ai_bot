@@ -151,6 +151,10 @@ def generate_response(from_user, text):
         # チャット履歴を初期化
         init_chat_history()
         res = [TextMessage(text="チャットをリセットしました。")]
+    if text in ["コアラ"]:
+        res = [TextMessage(text="それは動物です。")]
+
+
     else:
         # AIを使って返信を生成
         res = [TextMessage(text=get_ai_response(from_user, text))]
