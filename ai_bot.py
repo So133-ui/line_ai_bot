@@ -151,8 +151,6 @@ def generate_response(from_user, text):
         # チャット履歴を初期化
         init_chat_history()
         res = [TextMessage(text="チャットをリセットしました。")]
-    if text in ["コアラ"]:
-        res = [TextMessage(text="それは動物です。")]
 
 
     else:
@@ -165,7 +163,26 @@ def generate_response(from_user, text):
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     # 送られてきたメッセージを取得
-    text = event.message.text
+    text = event.message.text.strip()
+
+    # 特定のメッセージに対する条件
+    if text == "こんにちは":
+        reply = "こんにちは！元気ですか？"
+    elif text == "備後弁教えて":
+        reply = "備後弁で「ありがとう」は「ありがとうのう」じゃ！"
+    else:
+        # デフォルトの返信
+        reply = "すみません、そのメッセージには対応していません。"
+
+    # メッセージを送信
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.reply_message_with_http_info(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply)]
+            )
+        )
 
     # 返信メッセージの送信
     with ApiClient(configuration) as api_client:
