@@ -41,7 +41,7 @@ def init_chat_history():
     chat_history.clear()
     system_role = {
         "role": "system",
-        "content": "あなたはごりごりの備後人で、気さくなトラックドライバーです。甘いものに目が無く、すぐスイーツのことを話します。口癖は「いいじゃろー」です。運転のコツについての話をしたがります。"
+        "content": "あなたはごりごりの備後人で、気さくなトラックドライバーです。甘いものに目が無く、すぐスイーツのことを話します。一人称は「わし」で口癖は「いいじゃろー」です。カープが大好きで、赤という言葉に敏感です。"
     }
     chat_history.append(system_role)
 
@@ -85,12 +85,79 @@ def callback():
 
     return "OK"
 
+#「広島のスイーツ」に応答
+sweets_shops = [
+    {
+        "name": "はっさく屋",
+        "location": "尾道市",
+        "specialty": "はっさく大福",
+        "description": "甘酸っぱいはっさくとあんこの相性抜群！",
+        "url": "https://0845.boo.jp/hassaku/index.html",
+        "image_url": "https://example.com/images/hassakuya.jpg"  # 画像URLを追加
+    },
+    {
+        "name": "紅葉堂",
+        "location": "広島市",
+        "specialty": "揚げもみじ",
+        "description": "定番のもみじまんじゅうと、その天ぷらの元祖のお店。",
+        "url": "https://momijido.com/",
+        "image_url": "https://momijido.com/wp-content/themes/momijido.com/agemomi/images/image2_1@2x.jpg"
+    },
+    {   "name": "しまなみドルチェ",
+        "location": "尾道市",
+        "specialty": "ジェラート",
+        "description": "瀬戸田レモンなど尾道の特産品が楽しめる。",
+        "url": "https://example.com/shimanamidolce",
+        "image_url": "https://www.setoda-dolce.com/parts/gelato-1.jpg"
+        }
+    ]
+
+import random
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+def get_sweets_recommendation():
+    shop = random.choice(sweets_shops)
+    text_message = (
+        f"ほいじゃ、広島でおすすめのスイーツ屋さんを教えちゃるわ！\n\n"
+        f"🏠 {shop['name']}（{shop['location']}）\n"
+        f"🍰 名物: {shop['specialty']}\n"
+        f"✨ {shop['description']}\n"
+        f"もっと見たいんなら: {shop['url']}"
+    )
+    return text_message, shop["image_url"]
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    user_message = request.json.get("events")[0]["message"]["text"]
+
+    if "スイーツ" in user_message:
+        text_message, image_url = get_sweets_recommendation()
+        response_messages = [
+            {"type": "text", "text": text_message},  # テキストメッセージ
+            {"type": "image", "originalContentUrl": image_url, "previewImageUrl": image_url}  # 画像メッセージ
+        ]
+    if "阪神" or "巨人" in user_message:
+        response_messages = "カープ以外の話はしちゃらん"
+
+
+    return jsonify({
+        "replyToken": request.json.get("events")[0]["replyToken"],
+        "messages": response_messages })
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
+
+
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     text = event.message.text.strip()
     reply_messages = []
 
-    if text in ["リセット", "初期化", "クリア", "りせっと", "clear"]:
+    if text in ["リセット", "初期化", "クリア", "reset", "clear"]:
         init_chat_history()
         reply_messages.append(TextMessage(text="チャットをリセットしました。"))
     else:
@@ -105,4 +172,5 @@ def handle_text_message(event):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
+
 
