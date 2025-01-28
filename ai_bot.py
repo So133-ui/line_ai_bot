@@ -128,8 +128,8 @@ def get_sweets_recommendation():
     )
     return text_message, shop["image_url"]
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
+@app.route("/callback", methods=["POST"])
+def callback():
     user_message = request.json.get("events")[0]["message"]["text"]
 
     if "スイーツ" in user_message:
