@@ -1,21 +1,26 @@
 import os
 import sys
-from flask import Flask, request, abort
+import random
+import logging
+from flask import Flask, request, jsonify, abort
 from linebot.v3 import WebhookHandler
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, UserSource
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, TextMessage, ReplyMessageRequest
 from linebot.v3.exceptions import InvalidSignatureError
 from openai import AzureOpenAI
-import random
 
-# Get LINE credentials from environment variables
+# Logging設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 環境変数からLINEのトークンとシークレットを取得
 channel_access_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 channel_secret = os.getenv("LINE_CHANNEL_SECRET")
 if not channel_access_token or not channel_secret:
     print("Specify LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET as environment variables.")
     sys.exit(1)
 
-# Get Azure OpenAI credentials from environment variables
+# 環境変数からAzure OpenAIの設定を取得
 azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
 azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
@@ -25,7 +30,7 @@ if not (azure_openai_endpoint and azure_openai_api_key and azure_openai_api_vers
         "Please set the environment variables AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_API_VERSION, and AZURE_OPENAI_MODEL."
     )
 
-# Initialize Flask app and LINE WebhookHandler
+# FlaskアプリケーションとWebhookHandlerを初期化
 app = Flask(__name__)
 handler = WebhookHandler(channel_secret)
 configuration = Configuration(access_token=channel_access_token)
@@ -33,9 +38,8 @@ ai = AzureOpenAI(
     azure_endpoint=azure_openai_endpoint, api_key=azure_openai_api_key, api_version=azure_openai_api_version
 )
 
-# Initialize chat history
+# チャット履歴を初期化
 chat_history = []
-
 
 def init_chat_history():
     chat_history.clear()
@@ -47,7 +51,7 @@ def init_chat_history():
 
 init_chat_history()
 
-# Function to get AI response
+# AI応答を取得する関数
 def get_ai_response(text):
     user_msg = {"role": "user", "content": text}
     chat_history.append(user_msg)
@@ -69,23 +73,7 @@ def get_ai_response(text):
     chat_history.append(ai_msg)
     return res_text
 
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature")
-    if not signature:
-        abort(400, "Missing X-Line-Signature header")
-
-    body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
-
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400, "Invalid signature")
-
-    return "OK"
-
-#「広島のスイーツ」に応答
+# 広島のスイーツリスト
 sweets_shops = [
     {
         "name": "はっさく屋",
@@ -93,7 +81,7 @@ sweets_shops = [
         "specialty": "はっさく大福",
         "description": "甘酸っぱいはっさくとあんこの相性抜群！",
         "url": "https://0845.boo.jp/hassaku/index.html",
-        "image_url": "https://example.com/images/hassakuya.jpg"  # 画像URLを追加
+        "image_url": "https://example.com/images/hassakuya.jpg"
     },
     {
         "name": "紅葉堂",
@@ -103,20 +91,17 @@ sweets_shops = [
         "url": "https://momijido.com/",
         "image_url": "https://momijido.com/wp-content/themes/momijido.com/agemomi/images/image2_1@2x.jpg"
     },
-    {   "name": "しまなみドルチェ",
+    {
+        "name": "しまなみドルチェ",
         "location": "尾道市",
         "specialty": "ジェラート",
         "description": "瀬戸田レモンなど尾道の特産品が楽しめる。",
         "url": "https://example.com/shimanamidolce",
         "image_url": "https://www.setoda-dolce.com/parts/gelato-1.jpg"
-        }
-    ]
+    }
+]
 
-import random
-from flask import Flask, request, jsonify
-
-app = Flask(__name__)
-
+# スイーツ店をランダムに取得する関数
 def get_sweets_recommendation():
     shop = random.choice(sweets_shops)
     text_message = (
@@ -130,27 +115,41 @@ def get_sweets_recommendation():
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    user_message = request.json.get("events")[0]["message"]["text"]
+    body = request.get_data(as_text=True)
+    signature = request.headers.get("X-Line-Signature")
 
+    if not signature:
+        logger.error("Missing X-Line-Signature header")
+        abort(400, "Missing X-Line-Signature header")
+
+    logger.info("Request body: %s", body)
+
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError as e:
+        logger.error("Invalid signature: %s", str(e))
+        abort(400, "Invalid signature")
+
+    body_json = request.get_json()
+    user_message = body_json["events"][0]["message"]["text"]
+    reply_token = body_json["events"][0]["replyToken"]
+
+    # 応答の処理
     if "スイーツ" in user_message:
         text_message, image_url = get_sweets_recommendation()
         response_messages = [
-            {"type": "text", "text": text_message},  # テキストメッセージ
-            {"type": "image", "originalContentUrl": image_url, "previewImageUrl": image_url}  # 画像メッセージ
+            {"type": "text", "text": text_message},
+            {"type": "image", "originalContentUrl": image_url, "previewImageUrl": image_url}
         ]
-    if "阪神" or "巨人" in user_message:
-        response_messages = "カープ以外の話はしちゃらん"
-
+    elif "阪神" in user_message or "巨人" in user_message:
+        response_messages = [{"type": "text", "text": "カープ以外の話はしちゃらん！"}]
+    else:
+        response_messages = [{"type": "text", "text": "すまん、わからんけどカープは最高じゃろ！"}]
 
     return jsonify({
-        "replyToken": request.json.get("events")[0]["replyToken"],
-        "messages": response_messages })
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
-
-
+        "replyToken": reply_token,
+        "messages": response_messages
+    })
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
@@ -172,5 +171,3 @@ def handle_text_message(event):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
-
-
