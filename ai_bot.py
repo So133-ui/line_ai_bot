@@ -1,149 +1,178 @@
 import os
 import sys
-import logging
 import random
-from flask import Flask, request, abort, jsonify
+
+from flask import Flask, request, abort
+
 from linebot.v3 import WebhookHandler
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, UserSource
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, TextMessage, ReplyMessageRequest
 from linebot.v3.exceptions import InvalidSignatureError
+
 from openai import AzureOpenAI
 
-# ログ設定
-logging.basicConfig(level=logging.DEBUG)  # DEBUGレベルでログを記録
-logger = logging.getLogger(__name__)
+# get LINE credentials from environment variables
+channel_access_token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+channel_secret = os.environ["LINE_CHANNEL_SECRET"]
 
-# LINE環境変数の取得
-channel_access_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-channel_secret = os.getenv("LINE_CHANNEL_SECRET")
-if not channel_access_token or not channel_secret:
-    logger.error("LINE_CHANNEL_ACCESS_TOKENまたはLINE_CHANNEL_SECRETが設定されていません。")
+if channel_access_token is None or channel_secret is None:
+    print("Specify LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET as environment variable.")
     sys.exit(1)
 
-# Azure OpenAI環境変数の取得
+# get Azure OpenAI credentials from environment variables
 azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
 azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
 azure_openai_model = os.getenv("AZURE_OPENAI_MODEL")
-if not (azure_openai_endpoint and azure_openai_api_key and azure_openai_api_version and azure_openai_model):
+
+if azure_openai_endpoint is None or azure_openai_api_key is None or azure_openai_api_version is None:
     raise Exception(
-        "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_MODELを設定してください。"
+        "Please set the environment variables AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and AZURE_OPENAI_API_VERSION."
     )
 
-# FlaskアプリケーションとLINE WebhookHandlerの初期化
-app = Flask(__name__)
+
 handler = WebhookHandler(channel_secret)
 configuration = Configuration(access_token=channel_access_token)
+
+app = Flask(__name__)
 ai = AzureOpenAI(
     azure_endpoint=azure_openai_endpoint, api_key=azure_openai_api_key, api_version=azure_openai_api_version
 )
 
-# チャット履歴の初期化
+
+# LINEボットからのリクエストを受け取るエンドポイント
+@app.route("/callback", methods=["POST"])
+def callback():
+    # get X-Line-Signature header value
+    signature = request.headers["X-Line-Signature"]
+
+    # get request body as text
+    body = request.get_data(as_text=True)
+    app.logger.info("Request body: " + body)
+
+    # handle webhook body
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError as e:
+        abort(400, e)
+
+    return "OK"
+
+
 chat_history = []
 
 
+# 　AIへのメッセージを初期化する関数
 def init_chat_history():
     chat_history.clear()
     system_role = {
         "role": "system",
-        "content": "あなたはごりごりの備後人で、気さくなトラックドライバーです。甘いものに目が無く、すぐスイーツのことを話します。一人称は「わし」で口癖は「いいじゃろー」です。カープが大好きで、赤という言葉に敏感です。"
+        "content": [
+            {
+                "type": "text",
+                "text": "あなたは尾道に住む備後人です。話し方は備後弁で、一人称は「わし」です。甘いものに目がないです。トラックドライバーで、カープが大好きです。"
+            },
+        ],
     }
     chat_history.append(system_role)
 
 
-init_chat_history()
-
-# スイーツ店のデータ
-sweets_shops = [
-    {
-        "name": "はっさく屋",
-        "location": "尾道市",
-        "specialty": "はっさく大福",
-        "description": "甘酸っぱいはっさくとあんこの相性抜群！",
-        "url": "https://0845.boo.jp/hassaku/index.html",
-        "image_url": "https://example.com/images/hassakuya.jpg"
-    },
-    {
-        "name": "紅葉堂",
-        "location": "広島市",
-        "specialty": "揚げもみじ",
-        "description": "定番のもみじまんじゅうと、その天ぷらの元祖のお店。",
-        "url": "https://momijido.com/",
-        "image_url": "https://momijido.com/wp-content/themes/momijido.com/agemomi/images/image2_1@2x.jpg"
-    },
-    {
-        "name": "しまなみドルチェ",
-        "location": "尾道市",
-        "specialty": "ジェラート",
-        "description": "瀬戸田レモンなど尾道の特産品が楽しめる。",
-        "url": "https://example.com/shimanamidolce",
-        "image_url": "https://www.setoda-dolce.com/parts/gelato-1.jpg"
+# 　返信メッセージをAIから取得する関数
+def get_ai_response(from_user, text):
+    # ユーザのメッセージを記録
+    user_msg = {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": text,
+            },
+        ],
     }
-]
+    chat_history.append(user_msg)
+
+    # AIのパラメータ
+    parameters = {
+        "model": azure_openai_model,  # AIモデル
+        "max_tokens": 100,  # 返信メッセージの最大トークン数
+        "temperature": 0.5,  # 生成の多様性（0: 最も確実な回答、1: 最も多様な回答）
+        "frequency_penalty": 0,  # 同じ単語を繰り返す頻度（0: 小さい）
+        "presence_penalty": 0,  # すでに生成した単語を再度生成する頻度（0: 小さい）
+        "stop": ["\n"],
+        "stream": False,
+    }
+
+    # AIから返信を取得
+    ai_response = ai.chat.completions.create(messages=chat_history, **parameters)
+    res_text = ai_response.choices[0].message.content
+
+    # AIの返信を記録
+    ai_msg = {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": res_text},
+        ],
+    }
+    chat_history.append(ai_msg)
+    return res_text
+
+sweets_shop = ["向島の「しまなみドルチェ」行ってみんさい、みかんのジェラートうまいで🍊もっと知りたいんならhttps://example.com/shimanamidolce にとびー😊",
+               "広島市の「紅葉堂」行ってみんさい、揚げもみじぶちうまいで🍁もっと知りたいんならhttps://momijido.com/ にとびー😊",
+               "尾道の「はっさく屋」行ってみんさい、はっさく大福のはっさくとあんこの相性いいでー！もっと知りたいんならhttps://0845.boo.jp/hassaku/index.html にとびー😊"
+               ]
 
 
-def get_sweets_recommendation():
-    shop = random.choice(sweets_shops)
-    text_message = (
-        f"ほいじゃ、広島でおすすめのスイーツ屋さんを教えちゃるわ！\n\n"
-        f"🏠 {shop['name']}（{shop['location']}）\n"
-        f"🍰 名物: {shop['specialty']}\n"
-        f"✨ {shop['description']}\n"
-        f"もっと見たいんなら: {shop['url']}"
-    )
-    return text_message, shop["image_url"]
+
+# 　返信メッセージを生成する関数
+def generate_response(from_user, text):
+    res = []
+
+    if text in ["リセット", "初期化", "クリア", "reset", "clear"]:
+        # チャット履歴を初期化
+        init_chat_history()
+        res = [TextMessage(text="チャットをリセットしました。")]
+
+    elif text in ["阪神", "巨人"]:
+        res = [TextMessage(text="カープ以外の話はしちゃらん！")]
+    elif text in ["トラック", "運転"]:
+        res = [TextMessage(text="運転のことか？なんでも聞きぃ！わしが一番運転上手いんよ！")]
+    elif text in ["スイーツ"]:
+        res = [TextMessage(text=random.choice(sweets_shop))]
+    else:
+        # AIを使って返信を生成
+        res = [TextMessage(text=get_ai_response(from_user, text))]
+    return res
 
 
-@app.route("/callback", methods=["POST"])
-def callback():
-    body = request.get_data(as_text=True)
-    signature = request.headers.get("X-Line-Signature")
+# メッセージを受け取った時の処理
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_text_message(event):
+    # 送られてきたメッセージを取得
+    text = event.message.text
 
-    logger.debug("受信したリクエストボディ: %s", body)
+    # 返信メッセージの送信
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
 
-    if not signature:
-        logger.error("X-Line-Signatureヘッダーが見つかりません。")
-        abort(400, "Missing X-Line-Signature header")
-
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError as e:
-        logger.error("署名が無効です: %s", str(e))
-        abort(400, "Invalid signature")
-
-    try:
-        body_json = request.get_json()
-        logger.debug("受信したJSONデータ: %s", body_json)
-
-        events = body_json.get("events", [])
-        if not events:
-            logger.error("イベントが見つかりません。")
-            abort(400, "No events found")
-
-        user_message = events[0]["message"]["text"]
-        reply_token = events[0]["replyToken"]
-
-        if "スイーツ" in user_message:
-            text_message, image_url = get_sweets_recommendation()
-            response_messages = [
-                {"type": "text", "text": text_message},
-                {"type": "image", "originalContentUrl": image_url, "previewImageUrl": image_url}
-            ]
-        elif "阪神" in user_message or "巨人" in user_message:
-            response_messages = [{"type": "text", "text": "カープ以外の話はしちゃらん！"}]
+        res = []
+        if isinstance(event.source, UserSource):
+            # ユーザー情報が取得できた場合
+            profile = line_bot_api.get_profile(event.source.user_id)
+            # 返信メッセージを生成
+            res = generate_response(profile.display_name, text)
         else:
-            response_messages = [{"type": "text", "text": "すまん、わからんけどカープは最高じゃろ！"}]
+            # ユーザー情報が取得できなかった場合
+            # fmt: off
+            # 定型文の返信メッセージ
+            res = [
+                TextMessage(text="ユーザー情報を取得できませんでした。"),
+                TextMessage(text=f"メッセージ：{text}")
+            ]
+            # fmt: on
 
-        logger.debug("返信トークン: %s", reply_token)
-        logger.debug("返信メッセージ: %s", response_messages)
-
-        return jsonify({
-            "replyToken": reply_token,
-            "messages": response_messages
-        })
-    except Exception as e:
-        logger.error("エラーが発生しました: %s", str(e))
-        abort(500, "Internal Server Error")
+        # メッセージを送信
+        line_bot_api.reply_message_with_http_info(ReplyMessageRequest(reply_token=event.reply_token, messages=res))
 
 
 if __name__ == "__main__":
